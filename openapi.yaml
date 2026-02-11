@@ -6,6 +6,7 @@ info:
     - Medical Report Processing System
     - AI Chatbot System
     - Document Ingestion Pipeline
+    - API for filtering recipes based on diet types and allergens using Spoonacular.
     
     These services are deployed on AWS Lambda and provide secure, scalable healthcare AI capabilities.
   version: 1.0.0
@@ -20,6 +21,8 @@ servers:
     description: Chatbot Service (EU West 2)
   - url: https://uo7alxlti8.execute-api.eu-west-2.amazonaws.com/default
     description: Document Ingestion Service (EU West 2)
+  - url: https://24gqmkugpc.execute-api.eu-west-2.amazonaws.com/default
+    description: Filtering recipes based on diet types and allergens using Spoonacular. (EU West 2)
 
 tags:
   - name: Medical Reports
@@ -28,6 +31,8 @@ tags:
     description: AI-powered conversational interface with medical knowledge
   - name: Document Ingestion
     description: Ingest documents into Aeva-Brain vector database
+  - name: Recipe Filter
+    description: Filter recipes based on diet types and allergens using Spoonacular.
 
 paths:
   /aeva-upload-medical-reports:
@@ -543,6 +548,135 @@ paths:
                   value:
                     success: false
                     error: "Failed to process document: embedding generation failed"
+                    
+  /recipe-filter:
+    options:
+      summary: CORS preflight
+      description: Handles CORS preflight requests.
+      responses:
+        '200':
+          description: CORS preflight successful
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: string
+                example: ""
+    post:
+      summary: Get filtered recipes
+      description: |
+        Returns a meal plan (breakfast, lunch, dinner) based on the user's diet type(s) and allergens.
+        Uses Spoonacular under the hood and enriches data with MongoDB.
+      operationId: filterRecipes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - diettype
+                - allergens
+                - user
+              properties:
+                diettype:
+                  type: array
+                  items:
+                    type: string
+                  description: List of diet types to follow (e.g. "gluten free", "dairy free").
+                  example: ["gluten free", "dairy free"]
+                allergens:
+                  type: array
+                  items:
+                    type: string
+                  description: List of allergens / ingredients to exclude.
+                  example: ["eggs", "nuts", "soy"]
+                user:
+                  type: object
+                  description: Additional user context used for recommendations.
+                  example:
+                    root_causes: ["insulin_resistance"]
+                    Include Ingredients: ["chicken", "fish", "leafy greens", "nuts", "avocado"]
+                    Exclude Ingrdients: ["sugar", "white bread", "fruit juice", "eggs", "gluten"]
+                    life_stage: ["ovulation"]
+      responses:
+        '200':
+          description: Recipes successfully filtered
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                type: object
+                description: Meal plan grouped by meal type.
+                properties:
+                  breakfast:
+                    $ref: '#/components/schemas/MealTypeRecipes'
+                  lunch:
+                    $ref: '#/components/schemas/MealTypeRecipes'
+                  dinner:
+                    $ref: '#/components/schemas/MealTypeRecipes'
+        '400':
+          description: Bad request – missing required field
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missingDiettype:
+                  value:
+                    error: "Missing required field: diettype"
+                missingAllergens:
+                  value:
+                    error: "Missing required field: allergens"
+                missingUser:
+                  value:
+                    error: "Missing required field: user"
+        '500':
+          description: Internal server error
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              example:
+                error: "Internal server error"
 
 components:
   schemas:
@@ -559,6 +693,50 @@ components:
       required:
         - success
         - error
+
+    MealTypeRecipes:
+      type: array
+      description: List of recipes for a specific meal type.
+      items:
+        type: object
+        properties:
+          title:
+            type: string
+            description: Recipe title
+          summary:
+            type: string
+            description: Short description/summary in HTML or plain text.
+          readyInMinutes:
+            type: integer
+            description: Preparation time in minutes.
+          servings:
+            type: integer
+            description: Number of servings.
+          analyzedInstructions:
+            type: array
+            description: Step-by-step instructions, as returned by Spoonacular.
+            items:
+              type: object
+          image:
+            type: string
+            format: uri
+            description: URL of the recipe image.
+          nutrition:
+            type: object
+            description: Nutrition information from Spoonacular.
+          diets:
+            type: array
+            items:
+              type: string
+            description: Diet tags associated with the recipe.
+          why_selected:
+            type: string
+            description: Explanation of why this recipe was selected.
+            example: "Enjoy your eggs,nuts,soy free breakfast. It follows gluten free,dairy free as per your choice."
+          recipe_used:
+            type: boolean
+            description: Flag used by the system to track if a recipe was used.
+            example: false
 
   securitySchemes:
     ApiKeyAuth:
