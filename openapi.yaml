@@ -1,0 +1,574 @@
+openapi: 3.0.3
+info:
+  title: Aeva Health API Documentation
+  description: |
+    Complete API documentation for Aeva Health Platform services including:
+    - Medical Report Processing System
+    - AI Chatbot System
+    - Document Ingestion Pipeline
+    
+    These services are deployed on AWS Lambda and provide secure, scalable healthcare AI capabilities.
+  version: 1.0.0
+  contact:
+    name: Aeva Health API Support
+    email: support@aevahealth.com
+
+servers:
+  - url: https://cxeh3hhagf.execute-api.eu-west-2.amazonaws.com/default
+    description: Medical Report Upload Service (EU West 2)
+  - url: https://i9id072k62.execute-api.eu-west-2.amazonaws.com/default
+    description: Chatbot Service (EU West 2)
+  - url: https://uo7alxlti8.execute-api.eu-west-2.amazonaws.com/default
+    description: Document Ingestion Service (EU West 2)
+
+tags:
+  - name: Medical Reports
+    description: Upload and process medical reports with PII protection
+  - name: Chatbot
+    description: AI-powered conversational interface with medical knowledge
+  - name: Document Ingestion
+    description: Ingest documents into Aeva-Brain vector database
+
+paths:
+  /aeva-upload-medical-reports:
+    post:
+      tags:
+        - Medical Reports
+      summary: Upload and process medical report
+      description: |
+        Securely processes medical documents and extracts clinical insights using AI while ensuring strict PII protection.
+        
+        **Processing Flow:**
+        1. User uploads document to S3 (handled separately)
+        2. System generates presigned URL
+        3. Request sent to this endpoint with presigned URL
+        4. Document queued for asynchronous processing
+        5. PII detection and masking using AWS Comprehend Medical
+        6. Document conversion to Markdown
+        7. AI-powered summary and symptom extraction
+        8. Results stored in MongoDB
+        
+        **Supported File Formats:** PDF, PNG, JPG/JPEG, TXT, JSON
+        
+        **Processing Time:** Estimated 1-2 minutes for async processing
+      operationId: uploadMedicalReport
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - presigned_url
+                - user_id
+                - file_name
+                - session_id
+              properties:
+                presigned_url:
+                  type: string
+                  format: uri
+                  description: S3 presigned URL where the document is stored
+                  example: "https://aeva-brain-documents.s3.amazonaws.com/reports/blood_test_results.pdf?AWSAccessKeyId=..."
+                user_id:
+                  type: string
+                  description: Unique identifier for the user
+                  example: "user-456"
+                file_name:
+                  type: string
+                  description: Name of the uploaded file
+                  example: "blood_test_results.pdf"
+                session_id:
+                  type: string
+                  description: Session identifier for tracking
+                  example: "session-uuid-123"
+                use_queue:
+                  type: boolean
+                  description: Whether to process asynchronously via SQS queue (recommended)
+                  default: true
+                  example: true
+            examples:
+              blood_test:
+                summary: Blood Test Report
+                value:
+                  presigned_url: "https://aeva-brain-documents.s3.amazonaws.com/reports/blood_test_results.pdf"
+                  user_id: "user-456"
+                  file_name: "blood_test_results.pdf"
+                  session_id: "session-uuid-123"
+                  use_queue: true
+              medical_scan:
+                summary: Medical Scan Report
+                value:
+                  presigned_url: "https://aeva-brain-documents.s3.amazonaws.com/reports/mri_scan.pdf"
+                  user_id: "user-789"
+                  file_name: "mri_scan.pdf"
+                  session_id: "session-uuid-456"
+                  use_queue: true
+      responses:
+        '200':
+          description: Report successfully queued for processing
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  message:
+                    type: string
+                    example: "Report queued for processing"
+                  data:
+                    type: object
+                    properties:
+                      queued:
+                        type: boolean
+                        example: true
+                      message_id:
+                        type: string
+                        format: uuid
+                        description: SQS message ID for tracking processing status
+                        example: "4a028eeb-7d9a-431f-aef0-0b300d93169d"
+                      report_id:
+                        type: string
+                        description: Will be generated after processing
+                        example: "will_be_generated"
+                      status:
+                        type: string
+                        enum: [queued, processing, completed, failed]
+                        example: "queued"
+                      estimated_time:
+                        type: string
+                        description: Estimated processing time
+                        example: "1-2 minutes"
+              examples:
+                success_response:
+                  summary: Successful Queue Response
+                  value:
+                    success: true
+                    message: "Report queued for processing"
+                    data:
+                      queued: true
+                      message_id: "4a028eeb-7d9a-431f-aef0-0b300d93169d"
+                      report_id: "will_be_generated"
+                      status: "queued"
+                      estimated_time: "1-2 minutes"
+        '400':
+          description: Bad request - missing required fields or invalid data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missing_field:
+                  summary: Missing Required Field
+                  value:
+                    success: false
+                    error: "Missing required field: presigned_url"
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                server_error:
+                  summary: Server Error
+                  value:
+                    success: false
+                    error: "Failed to queue document for processing"
+
+  /aeva-chatbot-endpoint:
+    post:
+      tags:
+        - Chatbot
+      summary: Chat with Aeva AI Assistant
+      description: |
+        AI-powered conversational interface using LangGraph for structured reasoning and semantic retrieval.
+        
+        **Key Features:**
+        - Context-aware responses using conversation history
+        - Semantic search via Pinecone vector database
+        - Web search fallback for external knowledge
+        - Medical symptom extraction and severity assessment
+        - Parallel query processing for efficiency
+        
+        **Architecture:**
+        - Uses LangGraph for deterministic reasoning workflows
+        - MongoDB for conversation memory
+        - Pinecone for semantic retrieval
+        - OpenAI GPT for response generation
+        
+        **Processing Flow:**
+        1. Query is split into intent-specific subqueries
+        2. General questions and symptom queries handled in parallel
+        3. Vector search performed when needed
+        4. Web search used as fallback
+        5. Answers merged into coherent response
+        6. Conversation state persisted to MongoDB
+      operationId: chatWithAeva
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - user_id
+                - session_id
+                - query
+              properties:
+                user_id:
+                  type: string
+                  description: Unique identifier for the user
+                  example: "harsh"
+                session_id:
+                  type: string
+                  description: Session identifier for conversation continuity
+                  example: "test123"
+                query:
+                  type: string
+                  description: User's question or message
+                  example: "i have pcos how aeva can help me in this condition?"
+            examples:
+              pcos_query:
+                summary: PCOS Support Query
+                value:
+                  user_id: "harsh"
+                  session_id: "test123"
+                  query: "i have pcos how aeva can help me in this condition?"
+              symptom_query:
+                summary: Symptom Analysis
+                value:
+                  user_id: "user-001"
+                  session_id: "session-456"
+                  query: "I've been experiencing irregular periods and weight gain"
+              general_health:
+                summary: General Health Question
+                value:
+                  user_id: "user-002"
+                  session_id: "session-789"
+                  query: "What are the best lifestyle changes for managing diabetes?"
+      responses:
+        '200':
+          description: Successful response from chatbot
+          headers:
+            Content-Type:
+              schema:
+                type: string
+                example: application/json
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                example: "*"
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+                example: "Content-Type"
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+                example: "POST, OPTIONS"
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  session_id:
+                    type: string
+                    example: "test-001"
+                  user_id:
+                    type: string
+                    example: "harsh"
+                  query:
+                    type: string
+                    example: "i have pcos how aeva can help me in this condition?"
+                  response:
+                    type: string
+                    description: AI-generated response to the user's query
+                  decision:
+                    type: string
+                    enum: [internal, external, skip]
+                    description: Whether external knowledge was required
+                    example: "external"
+                  context_sufficient:
+                    type: boolean
+                    description: Whether retrieved context was sufficient
+                    example: false
+                  retrieved_chunk_count:
+                    type: integer
+                    description: Number of relevant chunks retrieved from vector DB
+                    example: 5
+                  retrieved_preview:
+                    type: array
+                    items:
+                      type: string
+                    description: Preview of retrieved context chunks
+                  latency:
+                    type: number
+                    format: float
+                    description: Total response latency in seconds
+                    example: 12.173
+                  processing_time:
+                    type: number
+                    format: float
+                    description: Processing time in seconds
+                    example: 12.16
+                  timestamp:
+                    type: string
+                    format: date-time
+                    example: "2026-01-15T08:12:10.873575Z"
+                  stored:
+                    type: boolean
+                    description: Whether conversation was stored in MongoDB
+                    example: true
+              examples:
+                pcos_response:
+                  summary: PCOS Support Response
+                  value:
+                    success: true
+                    session_id: "test-001"
+                    user_id: "harsh"
+                    query: "i have pcos how aeva can help me in this condition?"
+                    response: "I'm so glad you reached out! Living with PCOS can be challenging, but you're not alone in this journey. Aeva Health is here to support you with compassionate guidance and helpful insights tailored to your needs.\n\nHere's how Aeva can assist you:\n\n1. **Understanding Your Symptoms**: We can help you track your symptoms and understand how they relate to your hormonal balance.\n\n2. **Lifestyle and Dietary Guidance**: Small changes in your diet and lifestyle can make a big difference. We can suggest dietary patterns that may help improve insulin sensitivity and hormonal balance.\n\n3. **Empowering You with Information**: We'll provide you with easy-to-understand information about PCOS, its symptoms, and potential management strategies.\n\n4. **Encouraging Consistency**: We celebrate your progress, no matter how small.\n\n5. **Support for Mental Well-being**: PCOS can sometimes bring about emotional challenges. We're here to listen and provide encouragement.\n\nWhile Aeva can offer support and insights, it's important to consult with a healthcare professional for personalized medical advice and treatment options."
+                    decision: "external"
+                    context_sufficient: false
+                    retrieved_chunk_count: 5
+                    retrieved_preview:
+                      - "ting frequent reliability testing, and\nenhancing user engagement and support via additional features to promote\nmore comprehensive self-management of PCOS."
+                      - "ut-brain-ovary axis, steroidogenic factor\n1. Introduction\nPolycystic ovary syndrome (PCOS) is a common endocrine-metabolic disease\nin women, with an incidence of up to 5% ~20%"
+                      - "genetics, environmental\ninfluences, and lifestyle factors are believed to play key roles [ 4]. Insulin\nresistance, obesity, and chronic low-grade inflammation are commonly\nassociated with PCOS"
+                    latency: 12.173
+                    processing_time: 12.16
+                    timestamp: "2026-01-15T08:12:10.873575Z"
+                    stored: true
+        '400':
+          description: Bad request - missing required fields
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Internal server error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    options:
+      tags:
+        - Chatbot
+      summary: CORS preflight request
+      description: Handles CORS preflight requests for the chatbot endpoint
+      operationId: chatbotOptions
+      responses:
+        '200':
+          description: CORS headers returned
+          headers:
+            Access-Control-Allow-Origin:
+              schema:
+                type: string
+                example: "*"
+            Access-Control-Allow-Headers:
+              schema:
+                type: string
+                example: "Content-Type"
+            Access-Control-Allow-Methods:
+              schema:
+                type: string
+                example: "POST, OPTIONS"
+
+  /Ingest-docs:
+    post:
+      tags:
+        - Document Ingestion
+      summary: Ingest documents into Aeva-Brain
+      description: |
+        Enables users to upload documents, extract and process text, generate embeddings, and store them in vector database for semantic search.
+        
+        **Processing Pipeline:**
+        1. User uploads document from frontend
+        2. Document stored in Amazon S3 using pre-signed URL
+        3. API Gateway triggers ingestion Lambda
+        4. Lambda processes document and generates embeddings
+        5. Embeddings stored in Vector DB (Pinecone / OpenSearch)
+        6. Lambda sends ingestion status updates to Amazon SQS
+        7. User tracks ingestion status using Message ID
+        
+        **Supported Operations:**
+        - Text extraction from PDFs and other formats
+        - Intelligent text chunking for optimal embedding
+        - Vector embedding generation
+        - Storage in Pinecone or OpenSearch
+        - Status tracking via SQS
+        
+        **Vector Database Support:**
+        - Pinecone (with namespace support)
+        - OpenSearch (vector search)
+        - Both databases simultaneously
+      operationId: ingestDocument
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - presigned_url
+                - user_id
+                - project_name
+              properties:
+                presigned_url:
+                  type: string
+                  format: uri
+                  description: S3 presigned URL where the document is stored
+                  example: "https://aeva-brain-documents.s3.amazonaws.com/documents/research_paper.pdf"
+                user_id:
+                  type: string
+                  description: Unique identifier for the user
+                  example: "user-123"
+                project_name:
+                  type: string
+                  description: Project or collection name for organizing documents
+                  example: "medical-research"
+                file_name:
+                  type: string
+                  description: Name of the document file
+                  default: "document"
+                  example: "pcos_research_2024.pdf"
+                use_queue:
+                  type: boolean
+                  description: Whether to process asynchronously via SQS queue
+                  default: true
+                  example: true
+                index_type:
+                  type: string
+                  enum: [opensearch, pinecone, both]
+                  description: Target vector database for embeddings
+                  default: "opensearch"
+                  example: "pinecone"
+                pinecone_namespace:
+                  type: string
+                  description: Pinecone namespace for organizing vectors (optional)
+                  example: "medical-knowledge-base"
+            examples:
+              research_paper:
+                summary: Research Paper Ingestion
+                value:
+                  presigned_url: "https://aeva-brain-documents.s3.amazonaws.com/documents/pcos_research.pdf"
+                  user_id: "user-123"
+                  project_name: "medical-research"
+                  file_name: "pcos_research_2024.pdf"
+                  use_queue: true
+                  index_type: "pinecone"
+                  pinecone_namespace: "medical-knowledge-base"
+              clinical_guidelines:
+                summary: Clinical Guidelines
+                value:
+                  presigned_url: "https://aeva-brain-documents.s3.amazonaws.com/documents/guidelines.pdf"
+                  user_id: "user-456"
+                  project_name: "clinical-protocols"
+                  file_name: "diabetes_guidelines.pdf"
+                  use_queue: true
+                  index_type: "both"
+      responses:
+        '200':
+          description: Document successfully queued for ingestion
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: true
+                  status:
+                    type: string
+                    enum: [queued, processing, completed, failed]
+                    example: "queued"
+                  job_id:
+                    type: string
+                    description: Unique job identifier for tracking
+                    example: "user-123_medical-research_20260211_143022"
+                  message_id:
+                    type: string
+                    format: uuid
+                    description: SQS message ID for tracking processing status
+                    example: "7b9c4d3e-8a1f-4c2d-b5e6-9f3a2c1d8e7f"
+                  estimated_time:
+                    type: string
+                    description: Estimated processing time
+                    example: "5-15 minutes"
+              examples:
+                async_success:
+                  summary: Async Processing Queued
+                  value:
+                    success: true
+                    status: "queued"
+                    job_id: "user-123_medical-research_20260211_143022"
+                    message_id: "7b9c4d3e-8a1f-4c2d-b5e6-9f3a2c1d8e7f"
+                    estimated_time: "5-15 minutes"
+                sync_success:
+                  summary: Sync Processing Complete
+                  value:
+                    success: true
+                    status: "completed"
+                    job_id: "user-456_clinical-protocols_20260211_143530"
+                    total_chunks: 127
+                    embedding_count: 127
+                    index_type: "pinecone"
+                    processing_time: "8.5 seconds"
+        '400':
+          description: Bad request - missing required fields or invalid parameters
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                missing_field:
+                  summary: Missing Required Field
+                  value:
+                    success: false
+                    error: "Missing required field: presigned_url"
+        '500':
+          description: Internal server error - processing failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+              examples:
+                processing_error:
+                  summary: Processing Error
+                  value:
+                    success: false
+                    error: "Failed to process document: embedding generation failed"
+
+components:
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: string
+          description: Error message describing what went wrong
+          example: "Missing required field: user_id"
+      required:
+        - success
+        - error
+
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key for authentication (if required by your implementation)
+
+security: []  # No authentication required by default, but can be added per endpoint
+
+externalDocs:
+  description: Aeva Health Platform Documentation
+  url: https://docs.aevahealth.com
